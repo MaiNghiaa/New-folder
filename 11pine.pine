@@ -30,8 +30,9 @@ strategy("BOS Strong Strategy", max_lines_count = 500, overlay = true, calc_on_e
 // - ⚠️ QUAN TRỌNG: Không entry ngay khi vừa có BOS
 //
 // 📍 RISK MANAGEMENT:
-// - SL đặt ngoài OB (trên cho short, dưới cho long)
-// - TP theo R:R (1:1 mặc định)
+// - SL đặt ngoài OB với buffer (trên cho short, dưới cho long)
+// - TP theo R:R (1:1.5 mặc định cho entry tốt hơn)
+// - Buffer SL để tránh bị hunt bởi market makers
 //
 // ================================================================================
 
@@ -45,7 +46,8 @@ retracementThreshold = input.float(0.5, title="Retracement Threshold", minval=0.
 
 // Risk Management Settings
 slLookback = input.int(50, title="SL Lookback (bars)", minval=10, maxval=200, group="Risk Management")
-tpRatio = input.float(1, title="TP Ratio (vs SL)", minval=0.1, maxval=2.0, step=0.1, group="Risk Management")
+tpRatio = input.float(1.5, title="TP Ratio (vs SL)", minval=0.1, maxval=3.0, step=0.1, group="Risk Management")
+slBuffer = input.float(0.1, title="SL Buffer (%)", minval=0.0, maxval=1.0, step=0.05, group="Risk Management", tooltip="Buffer to avoid SL hunting (% of price)")
 
 // === Constants ===
 BULLISH = +1
@@ -355,8 +357,8 @@ shortSLLevel = m5OBHigh  // SL cho short = trên OB (cao nhất của OB 5M)
 // 4. ✅ Entry khi giá touch OB zone (điểm entry vàng)
 // 
 // 🎯 RISK MANAGEMENT:
-// - SL: Ngoài OB (dưới cho long, trên cho short)
-// - TP: Theo R:R ratio (mặc định 1:1)
+// - SL: Ngoài OB với buffer (dưới cho long, trên cho short)
+// - TP: Theo R:R ratio (mặc định 1:1.5 cho entry tốt hơn)
 // ================================================================================
 
 // Kiểm tra retracement về OB zone sau BOS
@@ -370,7 +372,7 @@ if currentBOS.waitingForRetracement and currentOB.active
         // 📈 LONG ENTRY: Sau BOS lên và retracement về Bullish OB
         if currentBOS.bullishBOS and strategy.position_size <= 0
             entryPrice = close
-            slPrice = currentOB.low  // SL dưới OB
+            slPrice = currentOB.low * (1 - slBuffer/100)  // SL dưới OB với buffer
             tpPrice = calculateTP(entryPrice, slPrice, true)
             
             strategy.entry("Long OB Retracement", strategy.long)
@@ -386,7 +388,7 @@ if currentBOS.waitingForRetracement and currentOB.active
         // 📉 SHORT ENTRY: Sau BOS xuống và retracement về Bearish OB
         if currentBOS.bearishBOS and strategy.position_size >= 0
             entryPrice = close
-            slPrice = currentOB.high  // SL trên OB  
+            slPrice = currentOB.high * (1 + slBuffer/100)  // SL trên OB với buffer
             tpPrice = calculateTP(entryPrice, slPrice, false)
             
             strategy.entry("Short OB Retracement", strategy.short)
@@ -456,7 +458,7 @@ fill(plot(showOBZones and currentOB.active ? obHighLevel : na, color=na),
 // 2. 🎯 Tìm OB gần nhất theo hướng BOS → Hiển thị vùng OB màu tím
 // 3. ⏳ Chờ giá retracement về vùng OB (điểm entry vàng)
 // 4. 🚀 Entry khi giá touch OB → Hiển thị "ENTRY OB LONG/SHORT"
-// 5. 📊 SL đặt ngoài OB, TP theo R:R ratio
+// 5. 📊 SL đặt ngoài OB với buffer, TP theo R:R ratio 1:1.5
 //
 // 🎮 SETTINGS AVAILABLE:
 // • Show BOS Signals, Show OB Zones, Show SL/TP
