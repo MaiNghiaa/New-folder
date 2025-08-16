@@ -242,6 +242,80 @@ findBearishOB() =>
 isPriceInOBZone(float obHigh, float obLow) =>
     low <= obHigh and high >= obLow
 
+// === Risk Management Functions ===
+// Calculate TP based on 100% of SL distance
+calculateTP(float entryPrice, float slPrice, bool isLong) =>
+    slDistance = math.abs(entryPrice - slPrice)
+    tpDistance = slDistance * tpRatio
+    
+    if isLong
+        entryPrice + tpDistance
+    else
+        entryPrice - tpDistance
+
+// === Entry Functions ===
+// Immediate Entry tại OB đầu tiên sau BOS (winrate cao)
+executeImmediateEntry(bool isLong, float obHigh, float obLow) =>
+    if isLong
+        entryPrice = obHigh  // Entry tại OB High cho long
+        slPrice = obLow * (1 - slBuffer/100)  // SL dưới OB với buffer
+        tpPrice = calculateTP(entryPrice, slPrice, true)
+        
+        strategy.entry("Long Immediate OB", strategy.long)
+        strategy.exit("Long Immediate Exit", "Long Immediate OB", stop=slPrice, limit=tpPrice)
+        
+        if showBOSSignals
+            label.new(bar_index, low, text="ENTRY\nIMMEDIATE\nLONG", color=color.green, style=label.style_label_up, size=size.small)
+    else
+        entryPrice = obLow  // Entry tại OB Low cho short
+        slPrice = obHigh * (1 + slBuffer/100)  // SL trên OB với buffer
+        tpPrice = calculateTP(entryPrice, slPrice, false)
+        
+        strategy.entry("Short Immediate OB", strategy.short)
+        strategy.exit("Short Immediate Exit", "Short Immediate OB", stop=slPrice, limit=tpPrice)
+        
+        if showBOSSignals
+            label.new(bar_index, high, text="ENTRY\nIMMEDIATE\nSHORT", color=color.red, style=label.style_label_down, size=size.small)
+
+// Hybrid Entry: 50% ngay + 50% chờ retracement
+executeHybridEntry(bool isLong, float obHigh, float obLow) =>
+    if isLong
+        // 50% entry ngay
+        entryPrice1 = obHigh
+        slPrice1 = obLow * (1 - slBuffer/100)
+        tpPrice1 = calculateTP(entryPrice1, slPrice1, true)
+        
+        strategy.entry("Long Hybrid 1", strategy.long, qty=0.5)
+        strategy.exit("Long Hybrid Exit 1", "Long Hybrid 1", stop=slPrice1, limit=tpPrice1)
+        
+        // 50% chờ retracement
+        currentBOS.waitingForRetracement := true
+        currentOB.active := true
+        currentOB.high := obHigh
+        currentOB.low := obLow
+        currentOB.direction := 1
+        
+        if showBOSSignals
+            label.new(bar_index, low, text="HYBRID\n50% NOW", color=color.blue, style=label.style_label_up, size=size.small)
+    else
+        // 50% entry ngay
+        entryPrice1 = obLow
+        slPrice1 = obHigh * (1 + slBuffer/100)
+        tpPrice1 = calculateTP(entryPrice1, slPrice1, false)
+        
+        strategy.entry("Short Hybrid 1", strategy.short, qty=0.5)
+        strategy.exit("Short Hybrid Exit 1", "Short Hybrid 1", stop=slPrice1, limit=tpPrice1)
+        
+        // 50% chờ retracement
+        currentBOS.waitingForRetracement := true
+        currentOB.active := true
+        currentOB.high := obHigh
+        currentOB.low := obLow
+        currentOB.direction := -1
+        
+        if showBOSSignals
+            label.new(bar_index, high, text="HYBRID\n50% NOW", color=color.orange, style=label.style_label_down, size=size.small)
+
 // ================================================================================
 // 🚨 BOS SIGNAL DETECTION
 // ================================================================================
@@ -320,80 +394,6 @@ detectBOSSignals() =>
                     currentOB.touched := false
     
     [bullishBOSStrong, bearishBOSStrong]
-
-// === Risk Management Functions ===
-// Calculate TP based on 100% of SL distance
-calculateTP(float entryPrice, float slPrice, bool isLong) =>
-    slDistance = math.abs(entryPrice - slPrice)
-    tpDistance = slDistance * tpRatio
-    
-    if isLong
-        entryPrice + tpDistance
-    else
-        entryPrice - tpDistance
-
-// === Entry Functions ===
-// Immediate Entry tại OB đầu tiên sau BOS (winrate cao)
-executeImmediateEntry(bool isLong, float obHigh, float obLow) =>
-    if isLong
-        entryPrice = obHigh  // Entry tại OB High cho long
-        slPrice = obLow * (1 - slBuffer/100)  // SL dưới OB với buffer
-        tpPrice = calculateTP(entryPrice, slPrice, true)
-        
-        strategy.entry("Long Immediate OB", strategy.long)
-        strategy.exit("Long Immediate Exit", "Long Immediate OB", stop=slPrice, limit=tpPrice)
-        
-        if showBOSSignals
-            label.new(bar_index, low, text="ENTRY\nIMMEDIATE\nLONG", color=color.green, style=label.style_label_up, size=size.small)
-    else
-        entryPrice = obLow  // Entry tại OB Low cho short
-        slPrice = obHigh * (1 + slBuffer/100)  // SL trên OB với buffer
-        tpPrice = calculateTP(entryPrice, slPrice, false)
-        
-        strategy.entry("Short Immediate OB", strategy.short)
-        strategy.exit("Short Immediate Exit", "Short Immediate OB", stop=slPrice, limit=tpPrice)
-        
-        if showBOSSignals
-            label.new(bar_index, high, text="ENTRY\nIMMEDIATE\nSHORT", color=color.red, style=label.style_label_down, size=size.small)
-
-// Hybrid Entry: 50% ngay + 50% chờ retracement
-executeHybridEntry(bool isLong, float obHigh, float obLow) =>
-    if isLong
-        // 50% entry ngay
-        entryPrice1 = obHigh
-        slPrice1 = obLow * (1 - slBuffer/100)
-        tpPrice1 = calculateTP(entryPrice1, slPrice1, true)
-        
-        strategy.entry("Long Hybrid 1", strategy.long, qty=0.5)
-        strategy.exit("Long Hybrid Exit 1", "Long Hybrid 1", stop=slPrice1, limit=tpPrice1)
-        
-        // 50% chờ retracement
-        currentBOS.waitingForRetracement := true
-        currentOB.active := true
-        currentOB.high := obHigh
-        currentOB.low := obLow
-        currentOB.direction := 1
-        
-        if showBOSSignals
-            label.new(bar_index, low, text="HYBRID\n50% NOW", color=color.blue, style=label.style_label_up, size=size.small)
-    else
-        // 50% entry ngay
-        entryPrice1 = obLow
-        slPrice1 = obHigh * (1 + slBuffer/100)
-        tpPrice1 = calculateTP(entryPrice1, slPrice1, false)
-        
-        strategy.entry("Short Hybrid 1", strategy.short, qty=0.5)
-        strategy.exit("Short Hybrid Exit 1", "Short Hybrid 1", stop=slPrice1, limit=tpPrice1)
-        
-        // 50% chờ retracement
-        currentBOS.waitingForRetracement := true
-        currentOB.active := true
-        currentOB.high := obHigh
-        currentOB.low := obLow
-        currentOB.direction := -1
-        
-        if showBOSSignals
-            label.new(bar_index, high, text="HYBRID\n50% NOW", color=color.orange, style=label.style_label_down, size=size.small)
 
 // === Main Execution ===
 // Update structure
