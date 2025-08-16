@@ -41,6 +41,9 @@ strategy("BOS Strong Strategy", max_lines_count = 500, overlay = true, calc_on_e
 showBOSSignals = input.bool(true, title="Show BOS Signals", group="BOS Entry")
 showSLTP = input.bool(true, title="Show SL/TP Levels", group="Risk Management")
 showOBZones = input.bool(true, title="Show Order Block Zones", group="BOS Entry")
+
+// Entry Mode Settings (Dựa trên thống kê winrate cao)
+entryMode = input.string("Retracement", title="Entry Mode", options=["Immediate", "Retracement", "Hybrid"], group="Entry Strategy", tooltip="Immediate: Entry ngay tại OB (winrate cao)\nRetracement: Chờ giá hồi về OB\nHybrid: 50% ngay + 50% chờ retracement")
 waitForRetracement = input.bool(true, title="Wait for OB Retracement", group="BOS Entry")
 retracementThreshold = input.float(0.5, title="Retracement Threshold", minval=0.1, maxval=1.0, step=0.1, group="BOS Entry")
 
@@ -262,21 +265,27 @@ detectBOSSignals() =>
             swingHigh.crossed := true
             swingTrend.bias := BULLISH
             
-            // Tìm Bullish OB và setup để chờ retracement
+            // Tìm Bullish OB và thực hiện entry theo mode
             [obHigh, obLow, obIndex] = findBullishOB()
             if not na(obHigh) and not na(obLow)
                 currentBOS.bullishBOS := true
                 currentBOS.bearishBOS := false
                 currentBOS.obHigh := obHigh
                 currentBOS.obLow := obLow
-                currentBOS.waitingForRetracement := true
                 
-                currentOB.high := obHigh
-                currentOB.low := obLow
-                currentOB.barIndex := obIndex
-                currentOB.direction := 1  // Bullish OB
-                currentOB.active := true
-                currentOB.touched := false
+                // Thực hiện entry theo mode được chọn
+                if entryMode == "Immediate"
+                    executeImmediateEntry(true, obHigh, obLow)
+                else if entryMode == "Hybrid"
+                    executeHybridEntry(true, obHigh, obLow)
+                else  // Retracement mode
+                    currentBOS.waitingForRetracement := true
+                    currentOB.high := obHigh
+                    currentOB.low := obLow
+                    currentOB.barIndex := obIndex
+                    currentOB.direction := 1  // Bullish OB
+                    currentOB.active := true
+                    currentOB.touched := false
     
     // 📉 BOS XUỐNG: Giá phá swing low + cây nến bearish mạnh  
     // → Xu hướng giảm mới, tìm Bearish OB và chờ retracement
@@ -288,21 +297,27 @@ detectBOSSignals() =>
             swingLow.crossed := true
             swingTrend.bias := BEARISH
             
-            // Tìm Bearish OB và setup để chờ retracement
+            // Tìm Bearish OB và thực hiện entry theo mode
             [obHigh, obLow, obIndex] = findBearishOB()
             if not na(obHigh) and not na(obLow)
                 currentBOS.bullishBOS := false
                 currentBOS.bearishBOS := true
                 currentBOS.obHigh := obHigh
                 currentBOS.obLow := obLow
-                currentBOS.waitingForRetracement := true
                 
-                currentOB.high := obHigh
-                currentOB.low := obLow
-                currentOB.barIndex := obIndex
-                currentOB.direction := -1  // Bearish OB
-                currentOB.active := true
-                currentOB.touched := false
+                // Thực hiện entry theo mode được chọn
+                if entryMode == "Immediate"
+                    executeImmediateEntry(false, obHigh, obLow)
+                else if entryMode == "Hybrid"
+                    executeHybridEntry(false, obHigh, obLow)
+                else  // Retracement mode
+                    currentBOS.waitingForRetracement := true
+                    currentOB.high := obHigh
+                    currentOB.low := obLow
+                    currentOB.barIndex := obIndex
+                    currentOB.direction := -1  // Bearish OB
+                    currentOB.active := true
+                    currentOB.touched := false
     
     [bullishBOSStrong, bearishBOSStrong]
 
@@ -316,6 +331,69 @@ calculateTP(float entryPrice, float slPrice, bool isLong) =>
         entryPrice + tpDistance
     else
         entryPrice - tpDistance
+
+// === Entry Functions ===
+// Immediate Entry tại OB đầu tiên sau BOS (winrate cao)
+executeImmediateEntry(bool isLong, float obHigh, float obLow) =>
+    if isLong
+        entryPrice = obHigh  // Entry tại OB High cho long
+        slPrice = obLow * (1 - slBuffer/100)  // SL dưới OB với buffer
+        tpPrice = calculateTP(entryPrice, slPrice, true)
+        
+        strategy.entry("Long Immediate OB", strategy.long)
+        strategy.exit("Long Immediate Exit", "Long Immediate OB", stop=slPrice, limit=tpPrice)
+        
+        if showBOSSignals
+            label.new(bar_index, low, text="ENTRY\nIMMEDIATE\nLONG", color=color.green, style=label.style_label_up, size=size.small)
+    else
+        entryPrice = obLow  // Entry tại OB Low cho short
+        slPrice = obHigh * (1 + slBuffer/100)  // SL trên OB với buffer
+        tpPrice = calculateTP(entryPrice, slPrice, false)
+        
+        strategy.entry("Short Immediate OB", strategy.short)
+        strategy.exit("Short Immediate Exit", "Short Immediate OB", stop=slPrice, limit=tpPrice)
+        
+        if showBOSSignals
+            label.new(bar_index, high, text="ENTRY\nIMMEDIATE\nSHORT", color=color.red, style=label.style_label_down, size=size.small)
+
+// Hybrid Entry: 50% ngay + 50% chờ retracement
+executeHybridEntry(bool isLong, float obHigh, float obLow) =>
+    if isLong
+        // 50% entry ngay
+        entryPrice1 = obHigh
+        slPrice1 = obLow * (1 - slBuffer/100)
+        tpPrice1 = calculateTP(entryPrice1, slPrice1, true)
+        
+        strategy.entry("Long Hybrid 1", strategy.long, qty=0.5)
+        strategy.exit("Long Hybrid Exit 1", "Long Hybrid 1", stop=slPrice1, limit=tpPrice1)
+        
+        // 50% chờ retracement
+        currentBOS.waitingForRetracement := true
+        currentOB.active := true
+        currentOB.high := obHigh
+        currentOB.low := obLow
+        currentOB.direction := 1
+        
+        if showBOSSignals
+            label.new(bar_index, low, text="HYBRID\n50% NOW", color=color.blue, style=label.style_label_up, size=size.small)
+    else
+        // 50% entry ngay
+        entryPrice1 = obLow
+        slPrice1 = obHigh * (1 + slBuffer/100)
+        tpPrice1 = calculateTP(entryPrice1, slPrice1, false)
+        
+        strategy.entry("Short Hybrid 1", strategy.short, qty=0.5)
+        strategy.exit("Short Hybrid Exit 1", "Short Hybrid 1", stop=slPrice1, limit=tpPrice1)
+        
+        // 50% chờ retracement
+        currentBOS.waitingForRetracement := true
+        currentOB.active := true
+        currentOB.high := obHigh
+        currentOB.low := obLow
+        currentOB.direction := -1
+        
+        if showBOSSignals
+            label.new(bar_index, high, text="HYBRID\n50% NOW", color=color.orange, style=label.style_label_down, size=size.small)
 
 // === Main Execution ===
 // Update structure
@@ -401,12 +479,22 @@ if currentBOS.waitingForRetracement and currentOB.active
             currentBOS.waitingForRetracement := false
             currentOB.active := false
 
-// 🔄 Hiển thị BOS signals (chỉ để thông báo, không entry ngay)
+// 🔄 Hiển thị BOS signals theo mode
 if bullishBOSStrong and showBOSSignals
-    label.new(bar_index, low, text="BOS↗\nWAIT OB", color=color.blue, style=label.style_label_up, size=size.normal)
+    if entryMode == "Immediate"
+        label.new(bar_index, low, text="BOS↗\nIMMEDIATE", color=color.green, style=label.style_label_up, size=size.normal)
+    else if entryMode == "Hybrid"
+        label.new(bar_index, low, text="BOS↗\nHYBRID", color=color.blue, style=label.style_label_up, size=size.normal)
+    else
+        label.new(bar_index, low, text="BOS↗\nWAIT OB", color=color.blue, style=label.style_label_up, size=size.normal)
 
 if bearishBOSStrong and showBOSSignals  
-    label.new(bar_index, high, text="BOS↘\nWAIT OB", color=color.orange, style=label.style_label_down, size=size.normal)
+    if entryMode == "Immediate"
+        label.new(bar_index, high, text="BOS↘\nIMMEDIATE", color=color.red, style=label.style_label_down, size=size.normal)
+    else if entryMode == "Hybrid"
+        label.new(bar_index, high, text="BOS↘\nHYBRID", color=color.orange, style=label.style_label_down, size=size.normal)
+    else
+        label.new(bar_index, high, text="BOS↘\nWAIT OB", color=color.orange, style=label.style_label_down, size=size.normal)
 
 // === Plots ===
 // Calculate TP levels for plotting
@@ -462,12 +550,14 @@ fill(plot(showOBZones and currentOB.active ? obHighLevel : na, color=na),
 //
 // 🎮 SETTINGS AVAILABLE:
 // • Show BOS Signals, Show OB Zones, Show SL/TP
-// • Wait for Retracement (bật/tắt chờ retracement)
-// • Retracement Threshold, TP Ratio
+// • Entry Mode: Immediate (winrate cao), Retracement, Hybrid
+// • Retracement Threshold, TP Ratio, SL Buffer
 //
 // 💎 ĐIỂM MẠNH CỦA STRATEGY:
-// • Không entry ngay khi có BOS (tránh fakeout)
-// • Chờ retracement về OB để có entry price tốt hơn
-// • Risk management chặt chẽ với SL ngoài OB
+// • 3 Entry Modes linh hoạt: Immediate (winrate cao), Retracement, Hybrid
+// • Immediate Entry: Bắt momentum mạnh nhất ngay tại OB đầu tiên
+// • Retracement Entry: Chờ giá hồi về OB để có entry price tốt hơn
+// • Hybrid Entry: 50% ngay + 50% chờ retracement (tối ưu cả 2)
+// • Risk management chặt chẽ với SL ngoài OB + buffer
 // • Visual clear giúp theo dõi signals dễ dàng
 // ================================================================================
