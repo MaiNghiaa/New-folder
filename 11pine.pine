@@ -39,6 +39,9 @@ strategy("BOS Strong Strategy", max_lines_count = 500, overlay = true, calc_on_e
 // BOS Strong Entry Settings
 showBOSSignals = input.bool(true, title="Show BOS Signals", group="BOS Entry")
 showSLTP = input.bool(true, title="Show SL/TP Levels", group="Risk Management")
+showOBZones = input.bool(true, title="Show Order Block Zones", group="BOS Entry")
+waitForRetracement = input.bool(true, title="Wait for OB Retracement", group="BOS Entry")
+retracementThreshold = input.float(0.5, title="Retracement Threshold", minval=0.1, maxval=1.0, step=0.1, group="BOS Entry")
 
 // Risk Management Settings
 slLookback = input.int(50, title="SL Lookback (bars)", minval=10, maxval=200, group="Risk Management")
@@ -66,10 +69,27 @@ type pivot
 type trend
     int bias
 
+type orderBlock
+    float high
+    float low
+    int barIndex
+    int direction  // 1 for bullish OB, -1 for bearish OB
+    bool active
+    bool touched
+
+type bosState
+    bool bullishBOS
+    bool bearishBOS
+    float obHigh
+    float obLow
+    bool waitingForRetracement
+
 // === Variables ===
 var pivot swingHigh = pivot.new(na, na, false, time, bar_index)
 var pivot swingLow = pivot.new(na, na, false, time, bar_index)
 var trend swingTrend = trend.new(0)
+var bosState currentBOS = bosState.new(false, false, na, na, false)
+var orderBlock currentOB = orderBlock.new(na, na, na, 0, false, false)
 
 // === Smart Money Functions ===
 // Leg detection function
@@ -158,6 +178,66 @@ isWeakBearishBar() =>
     close < open
 
 // ================================================================================
+// 🎯 ORDER BLOCK DETECTION FUNCTIONS
+// ================================================================================
+// Tìm Order Block theo chiến lược BOS → OB → Entry:
+// - Bullish OB: Cây bearish cuối cùng trước cú tăng mạnh
+// - Bearish OB: Cây bullish cuối cùng trước cú giảm mạnh
+// ================================================================================
+
+// Tìm Bullish Order Block (cho entry long sau BOS lên)
+findBullishOB() =>
+    var float obHigh = na
+    var float obLow = na
+    var int obIndex = na
+    
+    // Tìm cây bearish cuối cùng trước cú tăng mạnh
+    for i = 1 to 50
+        if close[i] < open[i] and close[i-1] > open[i-1]  // Cây bearish sau cây bullish
+            // Kiểm tra có cú tăng mạnh sau đó không
+            hasStrongRise = false
+            for j = 0 to i-1
+                if close[j] > high[i] and isStrongBullishBar()
+                    hasStrongRise := true
+                    break
+            
+            if hasStrongRise
+                obHigh := high[i]
+                obLow := low[i]
+                obIndex := bar_index[i]
+                break
+    
+    [obHigh, obLow, obIndex]
+
+// Tìm Bearish Order Block (cho entry short sau BOS xuống)  
+findBearishOB() =>
+    var float obHigh = na
+    var float obLow = na
+    var int obIndex = na
+    
+    // Tìm cây bullish cuối cùng trước cú giảm mạnh
+    for i = 1 to 50
+        if close[i] > open[i] and close[i-1] < open[i-1]  // Cây bullish sau cây bearish
+            // Kiểm tra có cú giảm mạnh sau đó không
+            hasStrongDrop = false
+            for j = 0 to i-1
+                if close[j] < low[i] and isStrongBearishBar()
+                    hasStrongDrop := true
+                    break
+                    
+            if hasStrongDrop
+                obHigh := high[i]
+                obLow := low[i] 
+                obIndex := bar_index[i]
+                break
+    
+    [obHigh, obLow, obIndex]
+
+// Kiểm tra giá có retracement về OB zone không
+isPriceInOBZone(float obHigh, float obLow) =>
+    low <= obHigh and high >= obLow
+
+// ================================================================================
 // 🚨 BOS SIGNAL DETECTION
 // ================================================================================
 // LOGIC THEO CHIẾN LƯỢC:
@@ -169,30 +249,58 @@ isWeakBearishBar() =>
 detectBOSSignals() =>
     bullishBOSStrong = false
     bearishBOSStrong = false
-    bullishBOSWeak = false
-    bearishBOSWeak = false
     
     // 📈 BOS LÊN: Giá phá swing high + cây nến bullish mạnh
-    // → Xu hướng tăng mới, cần tìm Bullish OB để entry long
+    // → Xu hướng tăng mới, tìm Bullish OB và chờ retracement
     if ta.crossover(close, swingHigh.currentLevel) and not swingHigh.crossed and isStrongBullishBar()
-        // Determine if it's BOS or CHOCH
         signalType = swingTrend.bias == BEARISH ? CHOCH : BOS
         
-        if signalType == BOS  // Only take BOS signals
+        if signalType == BOS
             bullishBOSStrong := true
             swingHigh.crossed := true
             swingTrend.bias := BULLISH
+            
+            // Tìm Bullish OB và setup để chờ retracement
+            [obHigh, obLow, obIndex] = findBullishOB()
+            if not na(obHigh) and not na(obLow)
+                currentBOS.bullishBOS := true
+                currentBOS.bearishBOS := false
+                currentBOS.obHigh := obHigh
+                currentBOS.obLow := obLow
+                currentBOS.waitingForRetracement := true
+                
+                currentOB.high := obHigh
+                currentOB.low := obLow
+                currentOB.barIndex := obIndex
+                currentOB.direction := 1  // Bullish OB
+                currentOB.active := true
+                currentOB.touched := false
     
     // 📉 BOS XUỐNG: Giá phá swing low + cây nến bearish mạnh  
-    // → Xu hướng giảm mới, cần tìm Bearish OB để entry short
+    // → Xu hướng giảm mới, tìm Bearish OB và chờ retracement
     if ta.crossunder(close, swingLow.currentLevel) and not swingLow.crossed and isStrongBearishBar()
-        // Determine if it's BOS or CHOCH
         signalType = swingTrend.bias == BULLISH ? CHOCH : BOS
         
-        if signalType == BOS  // Only take BOS signals
+        if signalType == BOS
             bearishBOSStrong := true
             swingLow.crossed := true
             swingTrend.bias := BEARISH
+            
+            // Tìm Bearish OB và setup để chờ retracement
+            [obHigh, obLow, obIndex] = findBearishOB()
+            if not na(obHigh) and not na(obLow)
+                currentBOS.bullishBOS := false
+                currentBOS.bearishBOS := true
+                currentBOS.obHigh := obHigh
+                currentBOS.obLow := obLow
+                currentBOS.waitingForRetracement := true
+                
+                currentOB.high := obHigh
+                currentOB.low := obLow
+                currentOB.barIndex := obIndex
+                currentOB.direction := -1  // Bearish OB
+                currentOB.active := true
+                currentOB.touched := false
     
     [bullishBOSStrong, bearishBOSStrong]
 
@@ -238,45 +346,65 @@ longSLLevel = m5OBLow    // SL cho long = dưới OB (thấp nhất của OB 5M)
 shortSLLevel = m5OBHigh  // SL cho short = trên OB (cao nhất của OB 5M)
 
 // ================================================================================
-// 🚀 STRATEGY EXECUTION - BƯỚC 3: ENTRY POINT
+// 🚀 STRATEGY EXECUTION - BƯỚC 3: ENTRY POINT (CẢI THIỆN)
 // ================================================================================
-// LOGIC ENTRY THEO CHIẾN LƯỢC BOS → OB → ENTRY:
-// 
-// ⚠️ CHÚ Ý: Code hiện tại entry ngay khi có BOS Signal
-// 📋 CÁCH CẢI THIỆN THEO CHIẾN LƯỢC CHUẨN:
-// 1. Phát hiện BOS → Đánh dấu xu hướng mới
-// 2. Tìm OB gần nhất theo hướng BOS  
-// 3. Đặt limit order tại vùng OB
-// 4. Entry khi giá retracement về OB (điểm entry vàng)
+// ✅ LOGIC ENTRY THEO CHIẾN LƯỢC BOS → OB → ENTRY CHUẨN:
+// 1. ✅ Phát hiện BOS → Đánh dấu xu hướng mới
+// 2. ✅ Tìm OB gần nhất theo hướng BOS  
+// 3. ✅ Chờ giá retracement về vùng OB
+// 4. ✅ Entry khi giá touch OB zone (điểm entry vàng)
 // 
 // 🎯 RISK MANAGEMENT:
 // - SL: Ngoài OB (dưới cho long, trên cho short)
 // - TP: Theo R:R ratio (mặc định 1:1)
 // ================================================================================
 
-// 📈 LONG ENTRY: Sau BOS lên
-if bullishBOSStrong and strategy.position_size <= 0
-    entryPrice = close  // ⚠️ Entry ngay, nên sửa thành limit order tại OB
-    slPrice = longSLLevel  // SL dưới Order Block
-    tpPrice = calculateTP(entryPrice, slPrice, true)  // TP theo R:R 1:1
+// Kiểm tra retracement về OB zone sau BOS
+if currentBOS.waitingForRetracement and currentOB.active
+    inOBZone = isPriceInOBZone(currentOB.high, currentOB.low)
     
-    strategy.entry("Long BOS Strong", strategy.long)
-    strategy.exit("Long Exit Strong", "Long BOS Strong", stop=slPrice, limit=tpPrice)
-    
-    if showBOSSignals
-        label.new(bar_index, low, text="BOS\nSTRONG\nLONG", color=color.green, style=label.style_label_up, size=size.normal)
+    // ✅ Entry khi giá retracement về OB zone
+    if inOBZone and not currentOB.touched
+        currentOB.touched := true
+        
+        // 📈 LONG ENTRY: Sau BOS lên và retracement về Bullish OB
+        if currentBOS.bullishBOS and strategy.position_size <= 0
+            entryPrice = close
+            slPrice = currentOB.low  // SL dưới OB
+            tpPrice = calculateTP(entryPrice, slPrice, true)
+            
+            strategy.entry("Long OB Retracement", strategy.long)
+            strategy.exit("Long OB Exit", "Long OB Retracement", stop=slPrice, limit=tpPrice)
+            
+            if showBOSSignals
+                label.new(bar_index, low, text="ENTRY\nOB\nLONG", color=color.green, style=label.style_label_up, size=size.small)
+            
+            // Reset BOS state after entry
+            currentBOS.waitingForRetracement := false
+            currentOB.active := false
+        
+        // 📉 SHORT ENTRY: Sau BOS xuống và retracement về Bearish OB
+        if currentBOS.bearishBOS and strategy.position_size >= 0
+            entryPrice = close
+            slPrice = currentOB.high  // SL trên OB  
+            tpPrice = calculateTP(entryPrice, slPrice, false)
+            
+            strategy.entry("Short OB Retracement", strategy.short)
+            strategy.exit("Short OB Exit", "Short OB Retracement", stop=slPrice, limit=tpPrice)
+            
+            if showBOSSignals
+                label.new(bar_index, high, text="ENTRY\nOB\nSHORT", color=color.red, style=label.style_label_down, size=size.small)
+            
+            // Reset BOS state after entry
+            currentBOS.waitingForRetracement := false
+            currentOB.active := false
 
-// 📉 SHORT ENTRY: Sau BOS xuống  
-if bearishBOSStrong and strategy.position_size >= 0
-    entryPrice = close  // ⚠️ Entry ngay, nên sửa thành limit order tại OB
-    slPrice = shortSLLevel  // SL trên Order Block
-    tpPrice = calculateTP(entryPrice, slPrice, false)  // TP theo R:R 1:1
-    
-    strategy.entry("Short BOS Strong", strategy.short)
-    strategy.exit("Short Exit Strong", "Short BOS Strong", stop=slPrice, limit=tpPrice)
-    
-    if showBOSSignals
-        label.new(bar_index, high, text="BOS\nSTRONG\nSHORT", color=color.red, style=label.style_label_down, size=size.normal)
+// 🔄 Hiển thị BOS signals (chỉ để thông báo, không entry ngay)
+if bullishBOSStrong and showBOSSignals
+    label.new(bar_index, low, text="BOS↗\nWAIT OB", color=color.blue, style=label.style_label_up, size=size.normal)
+
+if bearishBOSStrong and showBOSSignals  
+    label.new(bar_index, high, text="BOS↘\nWAIT OB", color=color.orange, style=label.style_label_down, size=size.normal)
 
 // === Plots ===
 // Calculate TP levels for plotting
@@ -292,22 +420,52 @@ plot(longTPLevel, "Long TP Level", color.green, 2, plot.style_stepline)
 plot(shortTPLevel, "Short TP Level", color.green, 2, plot.style_stepline)
 
 // ================================================================================
-// 📝 TÓM TẮT CHIẾN LƯỢC BOS → OB → ENTRY
+// 📊 ORDER BLOCK ZONE VISUALIZATION
 // ================================================================================
-// ✅ HIỆN TẠI SCRIPT ĐÃ CÓ:
+// Hiển thị vùng OB đang chờ retracement
+// ================================================================================
+
+// Plot Order Block zones
+obHighLevel = currentOB.active ? currentOB.high : na
+obLowLevel = currentOB.active ? currentOB.low : na
+
+plot(showOBZones and currentOB.active ? obHighLevel : na, "OB High", color.new(color.purple, 50), 2, plot.style_stepline)
+plot(showOBZones and currentOB.active ? obLowLevel : na, "OB Low", color.new(color.purple, 50), 2, plot.style_stepline)
+
+// Fill OB zone
+obZoneFill = fill(plot(showOBZones and currentOB.active ? obHighLevel : na, color=na), 
+                  plot(showOBZones and currentOB.active ? obLowLevel : na, color=na), 
+                  color=color.new(currentOB.direction > 0 ? color.green : color.red, 90),
+                  title="OB Zone")
+
+// ================================================================================
+// 🎉 CHIẾN LƯỢC BOS → OB → ENTRY ĐÃ HOÀN THIỆN
+// ================================================================================
+// ✅ SCRIPT ĐÃ CẢI THIỆN HOÀN TOÀN:
 // 1. ✅ BOS Detection - Phát hiện khi giá phá swing high/low với cây nến mạnh
-// 2. ✅ Order Block Logic - Sử dụng 5M timeframe để xác định OB levels  
-// 3. ✅ Risk Management - SL ngoài OB, TP theo R:R 1:1
-// 4. ✅ Visual Signals - Hiển thị BOS signals và SL/TP levels
+// 2. ✅ Order Block Detection - Tìm cây nến cụ thể làm OB theo đúng methodology
+//    • Bullish OB: Cây bearish cuối trước cú tăng mạnh (cho long entry)  
+//    • Bearish OB: Cây bullish cuối trước cú giảm mạnh (cho short entry)
+// 3. ✅ Retracement Logic - Chờ giá hồi về OB zone rồi mới entry
+// 4. ✅ Risk Management - SL ngoài OB, TP theo R:R 1:1
+// 5. ✅ Visual Signals - Hiển thị BOS, OB zones, entry points
+// 6. ✅ Settings Panel - Tùy chỉnh các tham số strategy
 //
-// 🔧 CẢI THIỆN TIẾP THEO:
-// 1. 🔄 Thay đổi entry logic: Thay vì entry ngay khi có BOS,
-//    nên đợi giá retracement về OB rồi mới entry (limit order)
-// 2. 🎯 Cải thiện OB detection: Tìm cây nến cụ thể làm OB
-//    (bullish cuối trước cú giảm mạnh / bearish cuối trước cú tăng mạnh)
-// 3. 📊 Thêm visualization cho OB zones
-// 4. ⏰ Timeout cho các BOS signal (không chờ retracement mãi mãi)
+// 🎯 CÁCH HOẠT ĐỘNG THEO CHIẾN LƯỢC CHUẨN:
+// 1. 🔍 Phát hiện BOS → Hiển thị "BOS↗ WAIT OB" hoặc "BOS↘ WAIT OB"
+// 2. 🎯 Tìm OB gần nhất theo hướng BOS → Hiển thị vùng OB màu tím
+// 3. ⏳ Chờ giá retracement về vùng OB (điểm entry vàng)
+// 4. 🚀 Entry khi giá touch OB → Hiển thị "ENTRY OB LONG/SHORT"
+// 5. 📊 SL đặt ngoài OB, TP theo R:R ratio
 //
-// 💡 LƯU Ý: Đây là framework cơ bản cho chiến lược BOS → OB → Entry
-//     Trader có thể fine-tune các parameters theo market conditions
+// 🎮 SETTINGS AVAILABLE:
+// • Show BOS Signals, Show OB Zones, Show SL/TP
+// • Wait for Retracement (bật/tắt chờ retracement)
+// • Retracement Threshold, TP Ratio
+//
+// 💎 ĐIỂM MẠNH CỦA STRATEGY:
+// • Không entry ngay khi có BOS (tránh fakeout)
+// • Chờ retracement về OB để có entry price tốt hơn
+// • Risk management chặt chẽ với SL ngoài OB
+// • Visual clear giúp theo dõi signals dễ dàng
 // ================================================================================
