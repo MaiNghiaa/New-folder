@@ -433,10 +433,10 @@ plot(showOBZones and currentOB.active ? obHighLevel : na, "OB High", color.new(c
 plot(showOBZones and currentOB.active ? obLowLevel : na, "OB Low", color.new(color.purple, 50), 2, plot.style_stepline)
 
 // Fill OB zone
-obZoneFill = fill(plot(showOBZones and currentOB.active ? obHighLevel : na, color=na), 
-                  plot(showOBZones and currentOB.active ? obLowLevel : na, color=na), 
-                  color=color.new(currentOB.direction > 0 ? color.green : color.red, 90),
-                  title="OB Zone")
+fill(plot(showOBZones and currentOB.active ? obHighLevel : na, color=na), 
+     plot(showOBZones and currentOB.active ? obLowLevel : na, color=na), 
+     color=color.new(currentOB.direction > 0 ? color.green : color.red, 90),
+     title="OB Zone")
 
 // ================================================================================
 // 🎉 CHIẾN LƯỢC BOS → OB → ENTRY ĐÃ HOÀN THIỆN
